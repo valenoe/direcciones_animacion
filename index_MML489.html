@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Letrero · Monseñor Manuel Larraín</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+<style>
+  :root{
+    /* Color de acento: líneas, marcador y botón. Cambia SOLO estas 3 líneas. */
+    --acento:#38bdf8;            /* azul claro */
+    --acento-oscuro:#0284c7;     /* versión oscura, para hover */
+    --acento-rgb:56,189,248;     /* el mismo color en RGB, para transparencias */
+    --tinta:#141414;
+    --crema:#f6f3ee;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; padding:0; height:100%;
+    font-family:'Segoe UI', system-ui, -apple-system, sans-serif;
+    background:var(--tinta);
+    overflow:hidden;
+  }
+  #map{
+    position:absolute; inset:0;
+    filter: saturate(0.55) contrast(1.05);
+  }
+  .panel{
+    position:absolute;
+    z-index:1000;
+    left:50%;
+    transform:translateX(-50%);
+    top:18px;
+    background:rgba(20,20,20,0.85);
+    backdrop-filter:blur(6px);
+    color:var(--crema);
+    padding:14px 22px;
+    border-radius:14px;
+    text-align:center;
+    border:1px solid rgba(255,255,255,0.08);
+    box-shadow:0 8px 30px rgba(0,0,0,0.35);
+    max-width:90vw;
+  }
+  .panel .kicker{
+    font-size:11px; letter-spacing:2.5px; text-transform:uppercase;
+    color:var(--acento); font-weight:700; margin-bottom:4px;
+  }
+  .panel h1{ margin:0; font-size:clamp(16px,2.6vw,22px); font-weight:700; line-height:1.25; }
+  .status{
+    position:absolute; z-index:1000; left:50%; bottom:22px; transform:translateX(-50%);
+    background:rgba(20,20,20,0.85); color:var(--crema);
+    padding:8px 16px; border-radius:999px; font-size:12px; letter-spacing:0.4px;
+    border:1px solid rgba(255,255,255,0.08);
+    transition:opacity .5s ease;   /* para que el aviso se desvanezca suave */
+  }
+  .status .dot{
+    display:inline-block;width:7px;height:7px;border-radius:50%;
+    background:var(--acento); margin-right:8px;
+    animation:pulseDot 1.2s infinite ease-in-out;
+  }
+  @keyframes pulseDot{ 0%,100%{opacity:1; transform:scale(1);} 50%{opacity:0.4; transform:scale(0.7);} }
+  .replay{
+    position:absolute; z-index:1000; right:18px; bottom:22px;
+    background:var(--acento); color:white; border:none;
+    padding:10px 16px; border-radius:10px; font-weight:600; font-size:13px; cursor:pointer;
+    box-shadow:0 6px 18px rgba(var(--acento-rgb),0.4);
+    display:none;
+  }
+  .replay:hover{background:var(--acento-oscuro);}
+  .sign-marker{ position:relative; width:26px; height:26px; }
+  .sign-marker .core{
+    position:absolute; top:50%; left:50%; width:16px; height:16px; margin:-8px 0 0 -8px;
+    background:var(--acento); border:3px solid white; border-radius:50%;
+    box-shadow:0 2px 8px rgba(0,0,0,0.4); z-index:2;
+  }
+  .sign-marker .ring{
+    position:absolute; top:50%; left:50%; width:16px; height:16px; margin:-8px 0 0 -8px;
+    border-radius:50%; background:rgba(var(--acento-rgb),0.55);
+    animation:ringPulse 1.8s infinite ease-out;
+  }
+  @keyframes ringPulse{ 0%{transform:scale(1); opacity:0.8;} 100%{transform:scale(3.4); opacity:0;} }
+  .leaflet-popup-content-wrapper{ background:var(--tinta); color:var(--crema); border-radius:10px; }
+  .leaflet-popup-tip{background:var(--tinta);}
+  .leaflet-control-attribution{font-size:9px;}
+  .calib-note{
+    position:absolute; z-index:1000; left:18px; top:18px;
+    background:rgba(255,196,0,0.95); color:#1a1a1a; font-size:11px; font-weight:700;
+    padding:8px 12px; border-radius:8px; max-width:220px; line-height:1.4;
+    box-shadow:0 4px 14px rgba(0,0,0,0.3);
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="panel" id="panel">
+  <div class="kicker">Ubicación del letrero</div>
+  <h1>Monseñor Manuel Larraín 489</h1>
+</div>
+
+<div class="status" id="status"><span class="dot"></span>Cargando…</div>
+<button class="replay" id="replayBtn">↻ Repetir animación</button>
+
+
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+const statusEl = document.getElementById('status');
+const replayBtn = document.getElementById('replayBtn');
+function setStatus(txt, showDot=true){
+  statusEl.style.opacity = '1';   // si estaba oculto, lo vuelve a mostrar
+  statusEl.innerHTML = (showDot ? '<span class="dot"></span>' : '') + txt;
+}
+// Desvanece el aviso de abajo (no lo borra, solo lo hace invisible).
+function hideStatus(){ statusEl.style.opacity = '0'; }
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+/* ======================= CONFIGURACIÓN (edita aquí) ======================= */
+// Coordenadas del letrero / intersección (confirmadas por Valery).
+const SIGN_LAT = -35.427858;
+const SIGN_LNG = -71.670350;
+
+ 
+
+/* ------------------------- CÓMO DIBUJAR LAS CALLES -------------------------
+   Cada calle es una LISTA DE PUNTOS [lat, lng] que se unen en orden, como si
+   dibujaras la calle con un lápiz siguiendo el asfalto.
+
+   Para sacar cada punto:
+     1. Abre Google Maps encima de la calle.
+     2. Click derecho justo sobre el eje de la calle.
+     3. Arriba del menú salen dos números -> click y se copian.
+     4. Pégalos aquí como   [lat, lng],   (ojo con la coma al final)
+
+   Anda de una punta de la calle a la otra, EN ORDEN. Si el tramo es recto
+   bastan 2 puntos; si dobla o hace curva, pon un punto en cada quiebre.
+   Para agregar otra calle, copia un bloque { nombre, puntos } completo.
+---------------------------------------------------------------------------- */
+
+const CALLES = [
+  {
+    nombre: 'Avenida 2 sur',
+    puntos: [
+      // TODO: reemplazar por puntos reales sacados de Google Maps
+      [-35.429292, -71.650462],
+      [-35.429296, -71.650788],
+      [-35.429390, -71.650978],
+      [-35.429473, -71.651228],
+      [-35.429169, -71.655136],
+      [-35.429058, -71.655294],
+      [-35.428940, -71.655460],
+      [-35.428793, -71.657204],
+      [-35.428868, -71.657362],
+      [-35.428942, -71.657619],
+      [-35.428817, -71.659270],
+      [-35.428778, -71.659953],
+      [-35.428542, -71.663127],
+      [-35.428330, -71.665483],
+      [-35.428155, -71.666851],
+      [-35.427980, -71.669613],
+      [-35.427928, -71.670231],
+      [-35.427879, -71.670419] // Aqué está el cruce
+    ]
+  },
+  {
+    nombre: 'Av. Carlos Schorr',
+    puntos: [
+      [-35.427879, -71.670419], // Cruce, empieza Carlos schorr
+      [-35.427987, -71.670609],
+      [-35.428249, -71.670985],
+      [-35.428765, -71.671693],
+      [-35.429126, -71.672149],
+      [-35.429241, -71.672393],
+      [-35.429309, -71.674650]
+    ]
+  },
+  {
+    nombre: 'Calle 1 sur',
+    puntos: [
+      [-35.427879, -71.670419], // Cruce, empieza Calle 1 sur
+      [-35.427679, -71.670612],
+      
+      [-35.427357, -71.670657],
+      [-35.427163, -71.670727],
+      [-35.426992, -71.670856],
+      [-35.426824, -71.671028],
+      [-35.426730, -71.671285],
+      [-35.426695, -71.671505],
+      
+      [-35.426693, -71.671712],
+      [-35.427023, -71.674135],
+      [-35.427082, -71.675488]
+    ]
+  }
+];
+/* ============================================================================ */
+
+const map = L.map('map', { zoomControl: true, attributionControl: true, minZoom: 3, maxZoom: 19 })
+  .setView([-35.4264, -71.6554], 4);
+
+L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+  subdomains: 'abcd',
+  maxZoom: 19
+}).addTo(map);
+
+const streetLayer = L.layerGroup().addTo(map);
+let signMarker = null;
+
+// Toma el color de acento definido en el CSS (:root --acento), para no repetirlo aquí.
+const ACENTO = getComputedStyle(document.documentElement).getPropertyValue('--acento').trim();
+
+function drawStreet(latlngs){
+  const glow = L.polyline(latlngs, { color:ACENTO, weight:12, opacity:0.18, lineCap:'round' });
+  const line = L.polyline(latlngs, { color:ACENTO, weight:4.5, opacity:0, lineCap:'round' });
+  streetLayer.addLayer(glow);
+  streetLayer.addLayer(line);
+  return line;
+}
+
+function animateLine(line, duration=900){
+  return new Promise(resolve=>{
+    let start = null;
+    function step(ts){
+      if(!start) start = ts;
+      const t = Math.min(1,(ts-start)/duration);
+      line.setStyle({opacity: t*0.95});
+      if(t<1){ requestAnimationFrame(step); } else { resolve(); }
+    }
+    requestAnimationFrame(step);
+  });
+}
+
+function addSignMarker(lat, lng){
+  const icon = L.divIcon({
+    className: '',
+    html: `<div class="sign-marker"><div class="ring"></div><div class="core"></div></div>`,
+    iconSize: [26,26], iconAnchor: [13,13]
+  });
+  signMarker = L.marker([lat,lng], {icon, zIndexOffset: 1000}).addTo(map);
+  signMarker.bindPopup(`<strong>Letrero</strong><br>Mons. Manuel Larraín 489`, {closeButton:false});
+}
+
+async function runAnimation(){
+  replayBtn.style.display = 'none';
+  streetLayer.clearLayers();
+  if(signMarker){ map.removeLayer(signMarker); signMarker = null; }
+  map.setView([-35.4264, -71.6554], 4.3);
+
+  setStatus('Acercando a Talca…');
+  map.flyTo([-35.4264,-71.6554], 12, {duration:1.6});
+  await sleep(1700);
+
+  setStatus('Acercando a la intersección…');
+  map.flyTo([SIGN_LAT,SIGN_LNG], 17.5, {duration:1.8});
+  await sleep(1900);
+
+  setStatus('Dibujando calles…');
+  for(const calle of CALLES){
+    const linea = drawStreet(calle.puntos);
+    await animateLine(linea, 900);
+    await sleep(150);
+  }
+  await sleep(300);
+
+  addSignMarker(SIGN_LAT, SIGN_LNG);
+  map.flyTo([SIGN_LAT,SIGN_LNG], 18.3, {duration:1.1});
+  await sleep(1200);
+  signMarker.openPopup();
+  hideStatus();   // se desvanece el aviso de abajo
+
+  replayBtn.style.display = 'block';
+}
+
+replayBtn.addEventListener('click', runAnimation);
+
+/* ========================= MODO CALIBRACIÓN =========================
+   Se activa SOLO si abres el archivo con  ?calibrar  al final de la URL.
+   Ejemplo:  mapa_letrero_talca_estatico.html?calibrar
+
+   Sirve para sacar coordenadas del MISMO mapa que se va a mostrar
+   (OpenStreetMap/CARTO), que dibuja las calles un poco distinto que
+   Google Maps. Haz click sobre la calle y se copia [lat, lng], al
+   portapapeles, listo para pegar en CALLES.
+
+   Los visitantes normales nunca ven esto.
+==================================================================== */
+const MODO_CALIBRAR = new URLSearchParams(location.search).has('calibrar');
+
+function iniciarCalibracion(){
+  document.getElementById('panel').style.display = 'none';
+  map.setView([SIGN_LAT, SIGN_LNG], 18);
+
+  // Dibuja las calles actuales para comparar contra el asfalto real.
+  CALLES.forEach(calle => drawStreet(calle.puntos).setStyle({opacity:0.9}));
+  addSignMarker(SIGN_LAT, SIGN_LNG);
+
+  const nota = document.createElement('div');
+  nota.className = 'calib-note';
+  nota.innerHTML = 'MODO CALIBRACIÓN<br>Click sobre la calle para copiar el punto.';
+  document.body.appendChild(nota);
+
+  map.on('click', async (e) => {
+    const txt = `[${e.latlng.lat.toFixed(7)}, ${e.latlng.lng.toFixed(7)}],`;
+
+    L.circleMarker(e.latlng, {
+      radius:4, color:'#00a3ff', fillColor:'#00a3ff', fillOpacity:1, weight:2
+    }).addTo(map);
+
+    let copiado = false;
+    try { await navigator.clipboard.writeText(txt); copiado = true; } catch(_) {}
+
+    console.log(txt);
+    nota.innerHTML = (copiado ? '✓ Copiado:' : 'Cópialo a mano:') + '<br>' + txt;
+    setStatus(txt, false);
+  });
+}
+
+if(MODO_CALIBRAR){ iniciarCalibracion(); } else { runAnimation(); }
+</script>
+</body>
+</html>
